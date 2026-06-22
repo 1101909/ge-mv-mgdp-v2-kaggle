@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+
+.ipynb_checkpoints/
+.venv/
+venv/
+
+*.log
+*.err
+results*.json
+*_results.json
+smoke_results.json
+
+# Local datasets are intentionally excluded. The Kaggle script reads from
+# /kaggle/input/datasets/toanktx/mmrec-cold by default.
+train_cold_item.jsonl
+test_cold_item.jsonl
+*.npy
+*.inter
