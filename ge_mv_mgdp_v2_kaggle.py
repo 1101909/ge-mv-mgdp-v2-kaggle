@@ -37,14 +37,8 @@ OUTPUT_PATH = os.environ.get(
 )
 
 RUN_DATASETS = [
-    "baby",
-    "sports",
-    "clothing",
     "elec",
 ]
-# RUN_DATASETS = [
-#     "elec",
-# ]
 TRAIN_LABEL = 0
 TEST_LABEL = 2
 

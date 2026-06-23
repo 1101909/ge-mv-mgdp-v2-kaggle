@@ -26,7 +26,7 @@ Kaggle usually already includes `numpy`, `pandas`, `scipy`, and `torch`, so the 
 Main settings are near the top of [ge_mv_mgdp_v2_kaggle.py](ge_mv_mgdp_v2_kaggle.py):
 
 ```python
-RUN_DATASETS = ["baby", "sports", "clothing", "elec"]
+RUN_DATASETS = ["elec"]
 EPOCHS = 100
 BATCH_SIZE = 256
 GRAPH_MODE = "knn"
