@@ -63,6 +63,7 @@ SEED = 42
 GRAPH_MODE = "knn"       # "knn" or "threshold"
 KNN_K = 10
 THRESHOLD_TAU = 0.3
+GRAPH_CHUNK_SIZE = int(os.environ.get("GRAPH_CHUNK_SIZE", "2048"))
 
 ALPHAS = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
 BETAS = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
@@ -105,21 +106,33 @@ def to_sparse(mx, device):
     return torch.sparse_coo_tensor(indices, values, mx.shape).coalesce().to(device)
 
 
-def build_knn_adj(features, k=10):
+def build_knn_adj(features, k=10, chunk_size=2048):
     n = features.size(0)
     if n <= 1:
         adj = sp.eye(n, dtype=np.float32)
         return adj.tocsr()
 
     k = max(1, min(k, n - 1))
-    features = l2_norm(features)
-    sim = torch.matmul(features, features.T)
+    chunk_size = max(1, int(chunk_size))
+    features = l2_norm(features.detach().cpu()).float()
 
-    _, idx = torch.topk(sim, k + 1, dim=1)
-    idx = idx[:, 1:]
+    row_chunks = []
+    col_chunks = []
+    all_features_t = features.T.contiguous()
 
-    rows = torch.arange(n).view(-1, 1).repeat(1, k).reshape(-1).cpu().numpy()
-    cols = idx.reshape(-1).cpu().numpy()
+    for start in range(0, n, chunk_size):
+        end = min(start + chunk_size, n)
+        sim = torch.matmul(features[start:end], all_features_t)
+        diag = torch.arange(start, end)
+        sim[torch.arange(end - start), diag] = -float("inf")
+        _, idx = torch.topk(sim, k, dim=1)
+
+        rows = torch.arange(start, end).view(-1, 1).repeat(1, k).reshape(-1)
+        row_chunks.append(rows.cpu().numpy())
+        col_chunks.append(idx.reshape(-1).cpu().numpy())
+
+    rows = np.concatenate(row_chunks)
+    cols = np.concatenate(col_chunks)
 
     adj = sp.csr_matrix(
         (np.ones_like(rows, dtype=np.float32), (rows, cols)),
@@ -128,15 +141,33 @@ def build_knn_adj(features, k=10):
     return normalize_adj(adj)
 
 
-def build_thresh_adj(features, tau=0.3):
+def build_thresh_adj(features, tau=0.3, chunk_size=2048):
     n = features.size(0)
-    features = l2_norm(features)
-    sim = torch.matmul(features, features.T)
-    mask = (sim >= tau) & (~torch.eye(n, device=sim.device).bool())
-    r, c = mask.nonzero(as_tuple=True)
+    chunk_size = max(1, int(chunk_size))
+    features = l2_norm(features.detach().cpu()).float()
+
+    row_chunks = []
+    col_chunks = []
+    all_features_t = features.T.contiguous()
+
+    for start in range(0, n, chunk_size):
+        end = min(start + chunk_size, n)
+        sim = torch.matmul(features[start:end], all_features_t)
+        diag = torch.arange(start, end)
+        sim[torch.arange(end - start), diag] = -float("inf")
+        r, c = (sim >= tau).nonzero(as_tuple=True)
+        row_chunks.append((r + start).cpu().numpy())
+        col_chunks.append(c.cpu().numpy())
+
+    if row_chunks:
+        rows = np.concatenate(row_chunks)
+        cols = np.concatenate(col_chunks)
+    else:
+        rows = np.array([], dtype=np.int64)
+        cols = np.array([], dtype=np.int64)
 
     adj = sp.csr_matrix(
-        (np.ones(len(r), dtype=np.float32), (r.cpu().numpy(), c.cpu().numpy())),
+        (np.ones(len(rows), dtype=np.float32), (rows, cols)),
         shape=(n, n)
     )
     return normalize_adj(adj)
@@ -146,12 +177,14 @@ def build_adj(image_feat, text_feat, graph_mode="knn", k=10, tau=0.3, device="cp
     combined = l2_norm(torch.cat([image_feat, text_feat], dim=1)).detach().cpu()
 
     if graph_mode == "knn":
-        adj = build_knn_adj(combined, k=k)
+        adj = build_knn_adj(combined, k=k, chunk_size=GRAPH_CHUNK_SIZE)
     elif graph_mode == "threshold":
-        adj = build_thresh_adj(combined, tau=tau)
+        adj = build_thresh_adj(combined, tau=tau, chunk_size=GRAPH_CHUNK_SIZE)
     else:
         raise ValueError(f"Unknown graph mode: {graph_mode}")
 
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return to_sparse(adj, device)
 
 

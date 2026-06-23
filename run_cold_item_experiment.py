@@ -58,6 +58,7 @@ TOPK_LIST = [1, 5, 10, 20]
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ALPHAS = [float(x) for x in ARGS.alphas.split(",") if x.strip()]
 BETAS = [float(x) for x in ARGS.betas.split(",") if x.strip()]
+GRAPH_CHUNK_SIZE = int(os.environ.get("GRAPH_CHUNK_SIZE", "2048"))
 
 
 def set_seed(seed):
@@ -108,15 +109,35 @@ def load_jsonl_items(path, max_items=None):
     return items
 
 
-def build_thresh_adj(features, tau=0.3):
+def build_thresh_adj(features, tau=0.3, chunk_size=2048):
     n = features.size(0)
-    sim = torch.matmul(features, features.T)
-    mask = (sim >= tau) & (~torch.eye(n, device=sim.device, dtype=torch.bool))
-    rows, cols = mask.nonzero(as_tuple=True)
+    chunk_size = max(1, int(chunk_size))
+    features = l2_norm(features.detach().cpu()).float()
+
+    row_chunks = []
+    col_chunks = []
+    features_t = features.T.contiguous()
+
+    for start in range(0, n, chunk_size):
+        end = min(start + chunk_size, n)
+        sim = torch.matmul(features[start:end], features_t)
+        diag = torch.arange(start, end)
+        sim[torch.arange(end - start), diag] = -float("inf")
+        rows, cols = (sim >= tau).nonzero(as_tuple=True)
+        row_chunks.append((rows + start).cpu().numpy())
+        col_chunks.append(cols.cpu().numpy())
+
+    if row_chunks:
+        rows = np.concatenate(row_chunks)
+        cols = np.concatenate(col_chunks)
+    else:
+        rows = np.array([], dtype=np.int64)
+        cols = np.array([], dtype=np.int64)
+
     adj = sp.csr_matrix(
         (
             np.ones(len(rows), dtype=np.float32),
-            (rows.cpu().numpy(), cols.cpu().numpy()),
+            (rows, cols),
         ),
         shape=(n, n),
     )
@@ -316,7 +337,11 @@ def eval_split(
     all_img = torch.cat([train_img, split_img], dim=0)
     all_txt = torch.cat([train_txt, split_txt], dim=0)
     adj_all = to_sparse(
-        build_thresh_adj(l2_norm(torch.cat([all_img, all_txt], dim=1)).detach().cpu(), tau=build_tau),
+        build_thresh_adj(
+            l2_norm(torch.cat([all_img, all_txt], dim=1)).detach().cpu(),
+            tau=build_tau,
+            chunk_size=GRAPH_CHUNK_SIZE,
+        ),
         DEVICE,
     )
     v_all, _, _ = model.encode_items(all_img, all_txt, adj_all, mode="online")
@@ -443,7 +468,11 @@ def train_model(train_dict, epochs):
     train_txt = (train_txt_raw - txt_mean) / txt_std
 
     adj = to_sparse(
-        build_thresh_adj(l2_norm(torch.cat([train_img, train_txt], dim=1)).detach().cpu(), tau=ARGS.tau_graph),
+        build_thresh_adj(
+            l2_norm(torch.cat([train_img, train_txt], dim=1)).detach().cpu(),
+            tau=ARGS.tau_graph,
+            chunk_size=GRAPH_CHUNK_SIZE,
+        ),
         DEVICE,
     )
 
