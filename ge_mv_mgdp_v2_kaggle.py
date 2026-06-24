@@ -57,7 +57,8 @@ SEED = 42
 GRAPH_MODE = "knn"       # "knn" or "threshold"
 KNN_K = 10
 THRESHOLD_TAU = 0.3
-GRAPH_CHUNK_SIZE = int(os.environ.get("GRAPH_CHUNK_SIZE", "2048"))
+GRAPH_CHUNK_SIZE = max(1, int(os.environ.get("GRAPH_CHUNK_SIZE", "2048")))
+EVAL_CHUNK_SIZE = max(1, int(os.environ.get("EVAL_CHUNK_SIZE", "128")))
 
 ALPHAS = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
 BETAS = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
@@ -502,10 +503,7 @@ def evaluate_model(
         eval_cols = np.array([i for _, i in eval_pairs], dtype=np.int64)
 
         eval_user_tensor = torch.tensor(eval_users, dtype=torch.long, device=device)
-
-        learned_score = torch.matmul(learned_users[eval_user_tensor], learned_test.T)
-        image_score = torch.matmul(user_img_zs[eval_user_tensor], test_img_zs.T)
-        text_score = torch.matmul(user_txt_zs[eval_user_tensor], test_txt_zs.T)
+        max_topk = min(max(TOPK_LIST), len(test_items))
 
         best = None
 
@@ -513,24 +511,35 @@ def evaluate_model(
         print("=" * 80)
 
         for alpha in ALPHAS:
-            zs_score = alpha * image_score + (1.0 - alpha) * text_score
-
             for beta in BETAS:
-                final_score = beta * learned_score + (1.0 - beta) * zs_score
-
-                _, top_idx = torch.topk(
-                    final_score,
-                    min(max(TOPK_LIST), len(test_items)),
-                    dim=1
-                )
-
-                top_idx = top_idx.cpu().numpy()
                 ranks = np.full(len(eval_pairs), np.inf, dtype=np.float32)
 
-                for pidx, (ridx, iidx) in enumerate(zip(eval_rows, eval_cols)):
-                    pos = np.where(top_idx[ridx] == iidx)[0]
-                    if len(pos) > 0:
-                        ranks[pidx] = pos[0]
+                for start in range(0, len(eval_users), EVAL_CHUNK_SIZE):
+                    end = min(start + EVAL_CHUNK_SIZE, len(eval_users))
+                    user_chunk = eval_user_tensor[start:end]
+
+                    learned_score = torch.matmul(learned_users[user_chunk], learned_test.T)
+                    image_score = torch.matmul(user_img_zs[user_chunk], test_img_zs.T)
+                    text_score = torch.matmul(user_txt_zs[user_chunk], test_txt_zs.T)
+                    zs_score = alpha * image_score + (1.0 - alpha) * text_score
+                    final_score = beta * learned_score + (1.0 - beta) * zs_score
+
+                    _, top_idx = torch.topk(final_score, max_topk, dim=1)
+                    top_idx = top_idx.cpu().numpy()
+
+                    chunk_mask = (eval_rows >= start) & (eval_rows < end)
+                    chunk_pair_idx = np.where(chunk_mask)[0]
+
+                    for pidx in chunk_pair_idx:
+                        local_row = eval_rows[pidx] - start
+                        item_idx = eval_cols[pidx]
+                        pos = np.where(top_idx[local_row] == item_idx)[0]
+                        if len(pos) > 0:
+                            ranks[pidx] = pos[0]
+
+                    del learned_score, image_score, text_score, zs_score, final_score
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
                 metrics = {}
                 for k in TOPK_LIST:
