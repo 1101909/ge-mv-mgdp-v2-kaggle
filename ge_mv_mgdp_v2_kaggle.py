@@ -12,6 +12,7 @@ import warnings
 from collections import defaultdict
 
 warnings.filterwarnings("ignore")
+os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
 import numpy as np
 import pandas as pd
@@ -169,7 +170,9 @@ def build_thresh_adj(features, tau=0.3, chunk_size=2048):
 
 
 def build_adj(image_feat, text_feat, graph_mode="knn", k=10, tau=0.3, device="cpu"):
-    combined = l2_norm(torch.cat([image_feat, text_feat], dim=1)).detach().cpu()
+    image_cpu = image_feat.detach().cpu()
+    text_cpu = text_feat.detach().cpu()
+    combined = l2_norm(torch.cat([image_cpu, text_cpu], dim=1))
 
     if graph_mode == "knn":
         adj = build_knn_adj(combined, k=k, chunk_size=GRAPH_CHUNK_SIZE)
@@ -413,7 +416,7 @@ class DeepGEV2(nn.Module):
         pos_scores = torch.einsum("nd,nd->n", ue, v_online[item_idx])
         loss_reg = -0.05 * pos_scores.mean()
 
-        return loss_main + loss_modal + loss_reg
+        return loss_main + loss_modal + loss_reg, v_pos.detach()
 
 
 # ============================================================
@@ -453,8 +456,11 @@ def evaluate_model(
         )
 
         v_all, _, _ = model.encode_items(all_image, all_text, adj_all, mode="online")
-        learned_test = v_all[len(train_items):]
+        learned_test = v_all[len(train_items):].clone()
         learned_users = l2_norm(model.user_proj(model.u_emb.weight))
+        del v_all, all_image, all_text, adj_all
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         train_item2local = {item_id: idx for idx, item_id in enumerate(train_items)}
         test_item2local = {item_id: idx for idx, item_id in enumerate(test_items)}
@@ -505,48 +511,79 @@ def evaluate_model(
         eval_user_tensor = torch.tensor(eval_users, dtype=torch.long, device=device)
         max_topk = min(max(TOPK_LIST), len(test_items))
 
-        best = None
-
         print("\nGRID SEARCH")
         print("=" * 80)
+        eval_chunks = (len(eval_users) + EVAL_CHUNK_SIZE - 1) // EVAL_CHUNK_SIZE
+        print(f"Evaluating {len(eval_users)} users in {eval_chunks} chunks...")
 
-        for alpha in ALPHAS:
-            for beta in BETAS:
-                ranks = np.full(len(eval_pairs), np.inf, dtype=np.float32)
+        grid_sums = {
+            (alpha, beta): {
+                k: {"recall": 0.0, "ndcg": 0.0, "mrr": 0.0}
+                for k in TOPK_LIST
+            }
+            for alpha in ALPHAS
+            for beta in BETAS
+        }
 
-                for start in range(0, len(eval_users), EVAL_CHUNK_SIZE):
-                    end = min(start + EVAL_CHUNK_SIZE, len(eval_users))
-                    user_chunk = eval_user_tensor[start:end]
+        for chunk_no, start in enumerate(range(0, len(eval_users), EVAL_CHUNK_SIZE), start=1):
+            end = min(start + EVAL_CHUNK_SIZE, len(eval_users))
+            if chunk_no == 1 or chunk_no == eval_chunks or chunk_no % 10 == 0:
+                print(f"Eval chunk {chunk_no}/{eval_chunks} ({end - start} users)")
 
-                    learned_score = torch.matmul(learned_users[user_chunk], learned_test.T)
-                    image_score = torch.matmul(user_img_zs[user_chunk], test_img_zs.T)
-                    text_score = torch.matmul(user_txt_zs[user_chunk], test_txt_zs.T)
-                    zs_score = alpha * image_score + (1.0 - alpha) * text_score
+            user_chunk = eval_user_tensor[start:end]
+
+            learned_score = torch.matmul(learned_users[user_chunk], learned_test.T)
+            image_score = torch.matmul(user_img_zs[user_chunk], test_img_zs.T)
+            text_score = torch.matmul(user_txt_zs[user_chunk], test_txt_zs.T)
+
+            chunk_mask = (eval_rows >= start) & (eval_rows < end)
+            chunk_pair_idx = np.where(chunk_mask)[0]
+
+            for alpha in ALPHAS:
+                zs_score = alpha * image_score + (1.0 - alpha) * text_score
+
+                for beta in BETAS:
                     final_score = beta * learned_score + (1.0 - beta) * zs_score
-
                     _, top_idx = torch.topk(final_score, max_topk, dim=1)
                     top_idx = top_idx.cpu().numpy()
 
-                    chunk_mask = (eval_rows >= start) & (eval_rows < end)
-                    chunk_pair_idx = np.where(chunk_mask)[0]
-
-                    for pidx in chunk_pair_idx:
+                    ranks = np.full(len(chunk_pair_idx), np.inf, dtype=np.float32)
+                    for out_idx, pidx in enumerate(chunk_pair_idx):
                         local_row = eval_rows[pidx] - start
                         item_idx = eval_cols[pidx]
                         pos = np.where(top_idx[local_row] == item_idx)[0]
                         if len(pos) > 0:
-                            ranks[pidx] = pos[0]
+                            ranks[out_idx] = pos[0]
 
-                    del learned_score, image_score, text_score, zs_score, final_score
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
+                    for k in TOPK_LIST:
+                        hits = ranks < k
+                        grid_sums[(alpha, beta)][k]["recall"] += float(np.sum(hits))
+                        grid_sums[(alpha, beta)][k]["ndcg"] += float(
+                            np.sum(np.where(hits, 1.0 / np.log2(ranks + 2), 0.0))
+                        )
+                        grid_sums[(alpha, beta)][k]["mrr"] += float(
+                            np.sum(np.where(hits, 1.0 / (ranks + 1), 0.0))
+                        )
 
+                    del final_score, top_idx
+
+                del zs_score
+
+            del learned_score, image_score, text_score
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        best = None
+        denom_eval = max(len(eval_pairs), 1)
+
+        for alpha in ALPHAS:
+            for beta in BETAS:
                 metrics = {}
                 for k in TOPK_LIST:
                     metrics[k] = {
-                        "recall": float(np.mean(ranks < k)),
-                        "ndcg": float(np.mean(np.where(ranks < k, 1.0 / np.log2(ranks + 2), 0.0))),
-                        "mrr": float(np.mean(np.where(ranks < k, 1.0 / (ranks + 1), 0.0))),
+                        "recall": grid_sums[(alpha, beta)][k]["recall"] / denom_eval,
+                        "ndcg": grid_sums[(alpha, beta)][k]["ndcg"] / denom_eval,
+                        "mrr": grid_sums[(alpha, beta)][k]["mrr"] / denom_eval,
                     }
 
                 print(
@@ -590,6 +627,8 @@ def run_dataset(dataset):
     print(f"Test pairs : {len(test_df)}")
     print(f"Image dim  : {image_feat.shape[1]}")
     print(f"Text dim   : {text_feat.shape[1]}")
+    print(f"Graph chunk: {GRAPH_CHUNK_SIZE}")
+    print(f"Eval chunk : {EVAL_CHUNK_SIZE}")
 
     user2idx = {u: i for i, u in enumerate(train_users)}
     item2idx = {i: j for j, i in enumerate(train_items)}
@@ -640,6 +679,10 @@ def run_dataset(dataset):
         for user_id, local_items in user_hist.items():
             model.u_emb.weight.data[user2idx[user_id]] = init_items[local_items].mean(0)
 
+        del init_items
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     pairs = [
         (user2idx[row.userID], item2idx[row.itemID])
         for row in train_df.itertuples(index=False)
@@ -677,7 +720,7 @@ def run_dataset(dataset):
             batch_users = batch_users.to(DEVICE)
             batch_items = batch_items.to(DEVICE)
 
-            loss = model(train_image, train_text, adj, batch_users, batch_items)
+            loss, queue_keys = model(train_image, train_text, adj, batch_users, batch_items)
 
             optimizer.zero_grad()
             loss.backward()
@@ -685,7 +728,7 @@ def run_dataset(dataset):
             optimizer.step()
 
             model.update_target()
-            model.enqueue_target(train_image, train_text, adj, batch_items)
+            model.queue.enqueue_and_dequeue(queue_keys)
 
             total_loss += float(loss.item())
             steps += 1
