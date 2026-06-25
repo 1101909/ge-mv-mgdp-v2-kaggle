@@ -788,37 +788,42 @@ def run_dataset(dataset):
 # Main
 # ============================================================
 
-set_seed(SEED)
+def main():
+    set_seed(SEED)
 
-all_results = []
+    all_results = []
 
-for dataset in RUN_DATASETS:
-    try:
-        result = run_dataset(dataset)
-        all_results.append(result)
-    except Exception as e:
-        print("\nERROR DATASET:", dataset)
-        print(type(e).__name__, str(e))
+    for dataset in RUN_DATASETS:
+        try:
+            result = run_dataset(dataset)
+            all_results.append(result)
+        except Exception as e:
+            print("\nERROR DATASET:", dataset)
+            print(type(e).__name__, str(e))
 
-print("\n\nFINAL SUMMARY")
-print("=" * 100)
+    print("\n\nFINAL SUMMARY")
+    print("=" * 100)
 
-for r in all_results:
-    m20 = r["metrics"][20]
-    print(
-        f"{r['dataset']:10s} | "
-        f"alpha={r['best_alpha']:.2f} | "
-        f"beta={r['best_beta']:.2f} | "
-        f"R@20={m20['recall']:.4f} | "
-        f"NDCG@20={m20['ndcg']:.4f} | "
-        f"MRR@20={m20['mrr']:.4f}"
-    )
+    for r in all_results:
+        m20 = r["metrics"][20]
+        print(
+            f"{r['dataset']:10s} | "
+            f"alpha={r['best_alpha']:.2f} | "
+            f"beta={r['best_beta']:.2f} | "
+            f"R@20={m20['recall']:.4f} | "
+            f"NDCG@20={m20['ndcg']:.4f} | "
+            f"MRR@20={m20['mrr']:.4f}"
+        )
 
-output_dir = os.path.dirname(OUTPUT_PATH)
-if output_dir:
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir = os.path.dirname(OUTPUT_PATH)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
 
-with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
-    json.dump(all_results, f, indent=2)
+    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
+        json.dump(all_results, f, indent=2)
 
-print(f"\nSaved to: {OUTPUT_PATH}")
+    print(f"\nSaved to: {OUTPUT_PATH}")
+
+
+if __name__ == "__main__":
+    main()

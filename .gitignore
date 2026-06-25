@@ -10,6 +10,8 @@ venv/
 results*.json
 *_results.json
 smoke_results.json
+*.xlsx
+~$*.xlsx
 
 # Local datasets are intentionally excluded. The Kaggle script reads from
 # /kaggle/input/datasets/toanktx/mmrec-cold by default.

@@ -51,8 +51,39 @@ You can override that path with:
 OUTPUT_PATH=/kaggle/working/my_results.json python ge_mv_mgdp_v2_kaggle.py
 ```
 
+## Ablation Studies
+
+Run all ablations:
+
+```bash
+!python ge_mv_mgdp_v2_ablations.py --datasets elec --epochs 100
+```
+
+Run only selected components:
+
+```bash
+!python ge_mv_mgdp_v2_ablations.py \
+  --datasets elec \
+  --only full,no_graph,no_gate,image_only,text_only,no_queue,no_modal_alignment \
+  --epochs 100
+```
+
+List available ablations:
+
+```bash
+!python ge_mv_mgdp_v2_ablations.py --list
+```
+
+The ablation runner writes:
+
+```text
+/kaggle/working/ge_mv_mgdp_ablations.json
+/kaggle/working/ge_mv_mgdp_ablations.csv
+```
+
 ## Files
 
 - `ge_mv_mgdp_v2_kaggle.py`: Kaggle-ready GE-MV-MGDP V2 experiment.
+- `ge_mv_mgdp_v2_ablations.py`: Ablation runner for evaluating model components.
 - `run_cold_item_experiment.py`: Legacy JSONL-based cold-item experiment.
 - `requirements.txt`: Minimal Python dependencies.
