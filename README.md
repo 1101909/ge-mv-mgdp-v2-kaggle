@@ -68,6 +68,26 @@ Run only selected components:
   --epochs 100
 ```
 
+Run component ablations with fixed alpha/beta from the full model:
+
+```bash
+!python ge_mv_mgdp_v2_ablations.py \
+  --datasets baby,sports,clothing \
+  --only full,no_graph,no_gate,image_only,text_only,no_queue,no_momentum,no_modal_alignment,no_pos_regularizer,threshold_graph \
+  --fixed-params baby:0.0:0.4,sports:0.0:0.4,clothing:0.0:0.6 \
+  --epochs 100
+```
+
+You can also read the fixed alpha/beta values directly from a full-run result JSON:
+
+```bash
+!python ge_mv_mgdp_v2_ablations.py \
+  --datasets baby,sports,clothing \
+  --only full,no_graph,no_gate,image_only,text_only,no_queue,no_momentum,no_modal_alignment,no_pos_regularizer,threshold_graph \
+  --fixed-params-json /kaggle/working/ge_mv_mgdp_results.json \
+  --epochs 100
+```
+
 List available ablations:
 
 ```bash

@@ -163,6 +163,70 @@ def parse_float_csv(value):
     return [float(x) for x in parse_csv_values(value)]
 
 
+def parse_fixed_params(value):
+    params = {}
+    if not value:
+        return params
+
+    for item in parse_csv_values(value):
+        parts = item.split(":")
+        if len(parts) != 3:
+            raise ValueError(
+                "Invalid --fixed-params entry. Use dataset:alpha:beta, "
+                "for example baby:0.0:0.4,sports:0.0:0.4"
+            )
+        dataset, alpha, beta = parts
+        params[dataset] = (float(alpha), float(beta))
+
+    return params
+
+
+def load_fixed_params_json(path):
+    if not path:
+        return {}
+
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    if isinstance(data, dict):
+        data = [data]
+
+    params = {}
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        if row.get("ablation") not in (None, "full"):
+            continue
+        dataset = row.get("dataset")
+        alpha = row.get("best_alpha")
+        beta = row.get("best_beta")
+        if dataset is None or alpha is None or beta is None:
+            continue
+        params[str(dataset)] = (float(alpha), float(beta))
+
+    return params
+
+
+def build_fixed_params(args):
+    fixed_params = {}
+
+    fixed_params.update(load_fixed_params_json(args.fixed_params_json))
+    fixed_params.update(parse_fixed_params(args.fixed_params))
+
+    has_alpha = args.fixed_alpha is not None
+    has_beta = args.fixed_beta is not None
+    if has_alpha != has_beta:
+        raise ValueError("--fixed-alpha and --fixed-beta must be provided together.")
+    if has_alpha and has_beta:
+        fixed_params["*"] = (float(args.fixed_alpha), float(args.fixed_beta))
+
+    return fixed_params
+
+
+def fixed_params_for_dataset(fixed_params, dataset):
+    return fixed_params.get(dataset) or fixed_params.get("*")
+
+
 def identity_adj(size, device):
     idx = torch.arange(size, dtype=torch.long, device=device)
     values = torch.ones(size, dtype=torch.float32, device=device)
@@ -257,7 +321,7 @@ def print_dataset_stats(dataset, spec, train_df, test_df, train_items, test_item
     print(f"Queue used : {spec.use_memory_queue}")
 
 
-def run_one_ablation(dataset, spec):
+def run_one_ablation(dataset, spec, fixed_params=None):
     train_df, test_df, train_items, test_items, train_users, image_feat, text_feat = base.load_mmrec_dataset(
         base.DATA_ROOT,
         dataset,
@@ -390,8 +454,20 @@ def run_one_ablation(dataset, spec):
                 f"Time={time.time() - start:.1f}s"
             )
 
-    eval_alphas = list(spec.eval_alphas) if spec.eval_alphas is not None else list(base.ALPHAS)
-    eval_betas = list(spec.eval_betas) if spec.eval_betas is not None else list(base.BETAS)
+    fixed_eval = fixed_params_for_dataset(fixed_params or {}, dataset)
+    if fixed_eval:
+        eval_alpha, eval_beta = fixed_eval
+        eval_alphas = [eval_alpha]
+        eval_betas = [eval_beta]
+        eval_mode = "fixed"
+    else:
+        eval_alphas = list(spec.eval_alphas) if spec.eval_alphas is not None else list(base.ALPHAS)
+        eval_betas = list(spec.eval_betas) if spec.eval_betas is not None else list(base.BETAS)
+        eval_mode = "grid"
+
+    print(f"\nEvaluation mode: {eval_mode}")
+    print(f"Eval alphas    : {eval_alphas}")
+    print(f"Eval betas     : {eval_betas}")
 
     with temporary_base_values(
         ALPHAS=eval_alphas,
@@ -439,6 +515,7 @@ def run_one_ablation(dataset, spec):
         "dataset": dataset,
         "best_alpha": best["alpha"],
         "best_beta": best["beta"],
+        "eval_mode": eval_mode,
         "eval_pairs": best["eval_pairs"],
         "metrics": best["metrics"],
         "settings": {
@@ -453,6 +530,8 @@ def run_one_ablation(dataset, spec):
             "graph_mode": spec.graph_mode or base.GRAPH_MODE,
             "eval_alphas": eval_alphas,
             "eval_betas": eval_betas,
+            "fixed_alpha": fixed_eval[0] if fixed_eval else None,
+            "fixed_beta": fixed_eval[1] if fixed_eval else None,
             "epochs": base.EPOCHS,
             "batch_size": base.BATCH_SIZE,
             "seed": base.SEED,
@@ -480,6 +559,7 @@ def write_outputs(results, output_path):
         "dataset",
         "best_alpha",
         "best_beta",
+        "eval_mode",
         "eval_pairs",
         "recall@20",
         "ndcg@20",
@@ -496,6 +576,7 @@ def write_outputs(results, output_path):
                     "dataset": result.get("dataset"),
                     "best_alpha": result.get("best_alpha"),
                     "best_beta": result.get("best_beta"),
+                    "eval_mode": result.get("eval_mode", ""),
                     "eval_pairs": result.get("eval_pairs"),
                     "recall@20": metric_at(result, 20, "recall"),
                     "ndcg@20": metric_at(result, 20, "ndcg"),
@@ -581,6 +662,34 @@ def parse_args():
     parser.add_argument("--eval-chunk-size", type=int, default=base.EVAL_CHUNK_SIZE)
     parser.add_argument("--alphas", default=",".join(str(x) for x in base.ALPHAS))
     parser.add_argument("--betas", default=",".join(str(x) for x in base.BETAS))
+    parser.add_argument(
+        "--fixed-alpha",
+        type=float,
+        default=None,
+        help="Use one fixed alpha for every dataset and ablation. Requires --fixed-beta.",
+    )
+    parser.add_argument(
+        "--fixed-beta",
+        type=float,
+        default=None,
+        help="Use one fixed beta for every dataset and ablation. Requires --fixed-alpha.",
+    )
+    parser.add_argument(
+        "--fixed-params",
+        default="",
+        help=(
+            "Dataset-specific fixed params as dataset:alpha:beta entries, "
+            "for example baby:0.0:0.4,sports:0.0:0.4,clothing:0.0:0.6."
+        ),
+    )
+    parser.add_argument(
+        "--fixed-params-json",
+        default="",
+        help=(
+            "Read dataset alpha/beta from a full-run result JSON containing "
+            "dataset, best_alpha, and best_beta fields."
+        ),
+    )
     parser.add_argument("--list", action="store_true", help="List available ablations and exit.")
     return parser.parse_args()
 
@@ -598,15 +707,22 @@ def main():
 
     datasets = parse_csv_values(args.datasets)
     specs = select_ablations(args.only)
+    fixed_params = build_fixed_params(args)
     results = []
 
     print("Selected datasets :", ", ".join(datasets))
     print("Selected ablations:", ", ".join(spec.name for spec in specs))
+    if fixed_params:
+        visible_params = {
+            dataset: {"alpha": alpha, "beta": beta}
+            for dataset, (alpha, beta) in fixed_params.items()
+        }
+        print("Fixed eval params :", visible_params)
 
     for dataset in datasets:
         for spec in specs:
             try:
-                result = run_one_ablation(dataset, spec)
+                result = run_one_ablation(dataset, spec, fixed_params=fixed_params)
             except Exception as exc:
                 print("\nERROR")
                 print(f"Dataset : {dataset}")

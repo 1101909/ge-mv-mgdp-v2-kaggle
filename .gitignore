@@ -10,6 +10,9 @@ venv/
 results*.json
 *_results.json
 smoke_results.json
+ketqua_*.json
+*ablations*.json
+*ablations*.csv
 *.xlsx
 ~$*.xlsx
 
