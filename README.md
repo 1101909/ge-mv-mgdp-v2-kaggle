@@ -101,6 +101,8 @@ The ablation runner writes:
 /kaggle/working/ge_mv_mgdp_ablations.csv
 ```
 
+In the ablation runner, `full` is executed through the same `run_dataset()` path used by `ge_mv_mgdp_v2_kaggle.py`. The other entries apply the requested component removals before training/evaluation.
+
 ## Files
 
 - `ge_mv_mgdp_v2_kaggle.py`: Kaggle-ready GE-MV-MGDP V2 experiment.

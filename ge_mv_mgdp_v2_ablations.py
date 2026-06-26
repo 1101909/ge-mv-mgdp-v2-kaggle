@@ -303,6 +303,79 @@ def replace_gate_with_mean(model):
     model.target_encoder.fusion = MeanFusion().to(base.DEVICE)
 
 
+def eval_lists_for_spec(dataset, spec, fixed_params):
+    fixed_eval = fixed_params_for_dataset(fixed_params or {}, dataset)
+    if fixed_eval:
+        eval_alpha, eval_beta = fixed_eval
+        return [eval_alpha], [eval_beta], "fixed", fixed_eval
+
+    eval_alphas = list(spec.eval_alphas) if spec.eval_alphas is not None else list(base.ALPHAS)
+    eval_betas = list(spec.eval_betas) if spec.eval_betas is not None else list(base.BETAS)
+    return eval_alphas, eval_betas, "grid", None
+
+
+def spec_settings(spec, eval_alphas, eval_betas, fixed_eval):
+    return {
+        "use_image": spec.use_image,
+        "use_text": spec.use_text,
+        "use_graph": spec.use_graph,
+        "use_gate": spec.use_gate,
+        "use_memory_queue": spec.use_memory_queue,
+        "use_momentum_target": spec.use_momentum_target,
+        "modal_loss_weight": spec.modal_loss_weight,
+        "pos_reg_weight": spec.pos_reg_weight,
+        "graph_mode": spec.graph_mode or base.GRAPH_MODE,
+        "eval_alphas": eval_alphas,
+        "eval_betas": eval_betas,
+        "fixed_alpha": fixed_eval[0] if fixed_eval else None,
+        "fixed_beta": fixed_eval[1] if fixed_eval else None,
+        "epochs": base.EPOCHS,
+        "batch_size": base.BATCH_SIZE,
+        "seed": base.SEED,
+    }
+
+
+def is_exact_full_spec(spec):
+    return (
+        spec.name == "full"
+        and spec.use_image
+        and spec.use_text
+        and spec.use_graph
+        and spec.use_gate
+        and spec.use_memory_queue
+        and spec.use_momentum_target
+        and spec.modal_loss_weight == 0.1
+        and spec.pos_reg_weight == -0.05
+        and spec.graph_mode is None
+    )
+
+
+def run_full_baseline(dataset, spec, fixed_params=None):
+    eval_alphas, eval_betas, eval_mode, fixed_eval = eval_lists_for_spec(dataset, spec, fixed_params)
+
+    print("\n" + "=" * 100)
+    print(f"ABLATION: {spec.name} | DATASET: {dataset}")
+    print("=" * 100)
+    print("Running exact full model path via ge_mv_mgdp_v2_kaggle.run_dataset().")
+    print(f"Evaluation mode: {eval_mode}")
+    print(f"Eval alphas    : {eval_alphas}")
+    print(f"Eval betas     : {eval_betas}")
+
+    base.set_seed(base.SEED)
+    with temporary_base_values(ALPHAS=eval_alphas, BETAS=eval_betas):
+        result = base.run_dataset(dataset)
+
+    result.update(
+        {
+            "ablation": spec.name,
+            "description": spec.description,
+            "eval_mode": eval_mode,
+            "settings": spec_settings(spec, eval_alphas, eval_betas, fixed_eval),
+        }
+    )
+    return result
+
+
 def print_dataset_stats(dataset, spec, train_df, test_df, train_items, test_items, train_users, image_feat, text_feat):
     print("\n" + "=" * 100)
     print(f"ABLATION: {spec.name} | DATASET: {dataset}")
@@ -322,6 +395,11 @@ def print_dataset_stats(dataset, spec, train_df, test_df, train_items, test_item
 
 
 def run_one_ablation(dataset, spec, fixed_params=None):
+    if is_exact_full_spec(spec):
+        return run_full_baseline(dataset, spec, fixed_params=fixed_params)
+
+    base.set_seed(base.SEED)
+
     train_df, test_df, train_items, test_items, train_users, image_feat, text_feat = base.load_mmrec_dataset(
         base.DATA_ROOT,
         dataset,
@@ -454,16 +532,7 @@ def run_one_ablation(dataset, spec, fixed_params=None):
                 f"Time={time.time() - start:.1f}s"
             )
 
-    fixed_eval = fixed_params_for_dataset(fixed_params or {}, dataset)
-    if fixed_eval:
-        eval_alpha, eval_beta = fixed_eval
-        eval_alphas = [eval_alpha]
-        eval_betas = [eval_beta]
-        eval_mode = "fixed"
-    else:
-        eval_alphas = list(spec.eval_alphas) if spec.eval_alphas is not None else list(base.ALPHAS)
-        eval_betas = list(spec.eval_betas) if spec.eval_betas is not None else list(base.BETAS)
-        eval_mode = "grid"
+    eval_alphas, eval_betas, eval_mode, fixed_eval = eval_lists_for_spec(dataset, spec, fixed_params)
 
     print(f"\nEvaluation mode: {eval_mode}")
     print(f"Eval alphas    : {eval_alphas}")
@@ -518,24 +587,7 @@ def run_one_ablation(dataset, spec, fixed_params=None):
         "eval_mode": eval_mode,
         "eval_pairs": best["eval_pairs"],
         "metrics": best["metrics"],
-        "settings": {
-            "use_image": spec.use_image,
-            "use_text": spec.use_text,
-            "use_graph": spec.use_graph,
-            "use_gate": spec.use_gate,
-            "use_memory_queue": spec.use_memory_queue,
-            "use_momentum_target": spec.use_momentum_target,
-            "modal_loss_weight": spec.modal_loss_weight,
-            "pos_reg_weight": spec.pos_reg_weight,
-            "graph_mode": spec.graph_mode or base.GRAPH_MODE,
-            "eval_alphas": eval_alphas,
-            "eval_betas": eval_betas,
-            "fixed_alpha": fixed_eval[0] if fixed_eval else None,
-            "fixed_beta": fixed_eval[1] if fixed_eval else None,
-            "epochs": base.EPOCHS,
-            "batch_size": base.BATCH_SIZE,
-            "seed": base.SEED,
-        },
+        "settings": spec_settings(spec, eval_alphas, eval_betas, fixed_eval),
     }
 
 
