@@ -4,6 +4,7 @@
 # /kaggle/input/datasets/toanktx/mmrec-cold/
 # ============================================================
 
+import argparse
 import os
 import json
 import time
@@ -788,7 +789,61 @@ def run_dataset(dataset):
 # Main
 # ============================================================
 
+def parse_csv_values(value):
+    return [x.strip() for x in value.split(",") if x.strip()]
+
+
+def parse_float_csv(value):
+    return [float(x) for x in parse_csv_values(value)]
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Run GE-MV-MGDP V2 on MMRec cold-start datasets."
+    )
+    parser.add_argument("--data-root", default=DATA_ROOT)
+    parser.add_argument("--datasets", default=",".join(RUN_DATASETS))
+    parser.add_argument("--output-path", default=OUTPUT_PATH)
+    parser.add_argument("--epochs", type=int, default=EPOCHS)
+    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
+    parser.add_argument("--lr", type=float, default=LR)
+    parser.add_argument("--weight-decay", type=float, default=WEIGHT_DECAY)
+    parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--graph-mode", choices=["knn", "threshold"], default=GRAPH_MODE)
+    parser.add_argument("--knn-k", type=int, default=KNN_K)
+    parser.add_argument("--threshold-tau", type=float, default=THRESHOLD_TAU)
+    parser.add_argument("--graph-chunk-size", type=int, default=GRAPH_CHUNK_SIZE)
+    parser.add_argument("--eval-chunk-size", type=int, default=EVAL_CHUNK_SIZE)
+    parser.add_argument("--alphas", default=",".join(str(x) for x in ALPHAS))
+    parser.add_argument("--betas", default=",".join(str(x) for x in BETAS))
+    return parser.parse_args()
+
+
+def apply_args(args):
+    global DATA_ROOT, OUTPUT_PATH, RUN_DATASETS, EPOCHS, BATCH_SIZE
+    global LR, WEIGHT_DECAY, SEED, GRAPH_MODE, KNN_K, THRESHOLD_TAU
+    global GRAPH_CHUNK_SIZE, EVAL_CHUNK_SIZE, ALPHAS, BETAS
+
+    DATA_ROOT = args.data_root
+    OUTPUT_PATH = args.output_path
+    RUN_DATASETS = parse_csv_values(args.datasets)
+    EPOCHS = args.epochs
+    BATCH_SIZE = args.batch_size
+    LR = args.lr
+    WEIGHT_DECAY = args.weight_decay
+    SEED = args.seed
+    GRAPH_MODE = args.graph_mode
+    KNN_K = args.knn_k
+    THRESHOLD_TAU = args.threshold_tau
+    GRAPH_CHUNK_SIZE = args.graph_chunk_size
+    EVAL_CHUNK_SIZE = args.eval_chunk_size
+    ALPHAS = parse_float_csv(args.alphas)
+    BETAS = parse_float_csv(args.betas)
+
+
 def main():
+    args = parse_args()
+    apply_args(args)
     set_seed(SEED)
 
     all_results = []

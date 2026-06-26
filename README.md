@@ -16,27 +16,30 @@ Then run:
 !git clone https://github.com/1101909/ge-mv-mgdp-v2-kaggle.git
 %cd ge-mv-mgdp-v2-kaggle
 !pip install -r requirements.txt
-!python ge_mv_mgdp_v2_kaggle.py
+!python ge_mv_mgdp_v2_kaggle.py --datasets baby
 ```
 
 Kaggle usually already includes `numpy`, `pandas`, `scipy`, and `torch`, so the install step can be skipped if those packages are available.
 
 ## Configuration
 
-Main settings are near the top of [ge_mv_mgdp_v2_kaggle.py](ge_mv_mgdp_v2_kaggle.py):
+Main settings can be passed from the command line:
 
-```python
-RUN_DATASETS = ["elec"]
-EPOCHS = 100
-BATCH_SIZE = 256
-GRAPH_MODE = "knn"
-KNN_K = 10
+```bash
+python ge_mv_mgdp_v2_kaggle.py \
+  --datasets baby,sports,clothing \
+  --epochs 100 \
+  --batch-size 256 \
+  --graph-mode knn \
+  --knn-k 10
 ```
 
 The script defaults to the Kaggle dataset path above. To use a different mounted path:
 
 ```bash
-MMREC_DATA_ROOT=/kaggle/input/your-dataset/mmrec-cold python ge_mv_mgdp_v2_kaggle.py
+python ge_mv_mgdp_v2_kaggle.py \
+  --data-root /kaggle/input/your-dataset/mmrec-cold \
+  --datasets baby
 ```
 
 Results are written to:
@@ -48,7 +51,9 @@ Results are written to:
 You can override that path with:
 
 ```bash
-OUTPUT_PATH=/kaggle/working/my_results.json python ge_mv_mgdp_v2_kaggle.py
+python ge_mv_mgdp_v2_kaggle.py \
+  --datasets baby \
+  --output-path /kaggle/working/my_results.json
 ```
 
 ## Ablation Studies
